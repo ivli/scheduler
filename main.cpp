@@ -16,7 +16,7 @@ public:
     explicit Task(int id=0, unsigned prio=5, std::chrono::milliseconds repeat_after=0s) : m_cancelled(false), m_id(id), m_priority(prio), m_repeat_after(repeat_after){}
     void Execute() const {if (!m_cancelled)
                             std::cout << "task# " + std::to_string(m_id) + ":" + std::to_string(priority()) + "\n";}
-    void Cancel() {m_cancelled=true;} 
+    void Cancel() {m_cancelled = true;} 
     unsigned priority() const {return m_priority;}
     std::chrono::milliseconds repeat_after() const {return m_repeat_after;}
     bool periodic()const {return m_repeat_after == 0s;}
@@ -45,24 +45,20 @@ protected:
 private:
     std::mutex               m_lock;
     std::condition_variable  m_cond;
-    std::atomic<bool>        m_active;
+    ///std::atomic<bool>        m_active;
 
     std::vector<std::thread> m_workers;
-    std::priority_queue<Task, std::vector<Task>, CompareTasks> m_oneshots;
-    std::priority_queue<Task, std::vector<Task>, CompareTasks> m_periodics;
+    std::array<std::queue<Task>, 10> m_oneshots;
+    //std::priority_queue<Task, std::vector<Task>, CompareTasks> m_oneshots;
+    //std::priority_queue<Task, std::vector<Task>, CompareTasks> m_periodics;
 };
 
-Scheduler::Scheduler(unsigned pool_size) : m_lock(), m_cond(), m_active(false)
+Scheduler::Scheduler(unsigned pool_size) : m_lock(), m_cond()
 {
-    if(!pool_size) 
-        pool_size = std::thread::hardware_concurrency();
-
-    std::cout << "pool size is " << pool_size << std::endl;
-
-    for (unsigned i = 0; i < pool_size; i++)
-    {
+    for (unsigned i = 0, k = pool_size ? pool_size : std::thread::hardware_concurrency(); i < k; ++i)
         m_workers.push_back(std::thread(&Scheduler::service, this));
-    }
+    
+    std::cout << "pool size is " << m_workers.size() << std::endl;
 }
 
 Scheduler::~Scheduler()
@@ -74,20 +70,11 @@ Scheduler::~Scheduler()
 void Scheduler::Schedule(Task&& task)
 {
     std::unique_lock<std::mutex> lock(m_lock);
-    m_oneshots.emplace(std::move(task));
+    m_oneshots[task.priority()].emplace(std::move(task));
     lock.unlock();
     m_cond.notify_one();
 }
 
-/*
-void Scheduler::Stop()
-{
-    std::unique_lock<std::mutex> lock(m_lock);
-    m_active = false;
-    lock.unlock();
-    m_cond.notify_all();
-}
-*/
 
 void Scheduler::service()
 {
@@ -98,14 +85,20 @@ void Scheduler::service()
         {
             std::unique_lock<std::mutex> lock(m_lock);
 
-            m_cond.wait(lock, [this]() { return !m_oneshots.empty(); });
+            m_cond.wait(lock, [this]() { return !m_oneshots.empty();});
 
-            if ( m_oneshots.empty())
+            if (m_oneshots.empty())
                 return;
 
-            task = m_oneshots.top();
+            for (auto &p:m_oneshots)
+                while(!p.empty())
+                {
+                    task=p.front();
+                    ///std::cout << p1.id << ":" << p1.prio << std::endl;
+                    p.pop();
+                }
 
-            m_oneshots.pop();
+
             
             //if (task.periodic())
             //   m_periodics.push(task);
@@ -116,8 +109,10 @@ void Scheduler::service()
     }
 }
 
+
 int main()
 {
+   
     Scheduler func_pool;
     
     for (int i = 0; i < 50; i++)
@@ -125,11 +120,8 @@ int main()
         func_pool.Schedule(Task(i, i%10));
     }
 
-    func_pool.Schedule(Task(101, 9, 1s));
 
-    std::this_thread::sleep_for(1000ms);
-
+    std::this_thread::sleep_for(1s);
     std::cout << "after sleep" << std::endl;
-    
-    //func_pool.Stop();
+
 }
