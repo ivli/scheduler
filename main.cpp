@@ -10,10 +10,16 @@
 #include <chrono>
 using namespace std::chrono_literals;
 
+constexpr static const unsigned NP=10;
+
 class Task
 {
 public:
-    Task(unsigned id=0, unsigned prio=5, std::chrono::milliseconds repeat_after=0s):m_active(true), m_id(id), m_priority(prio), m_repeat_after(repeat_after){}
+    Task(unsigned id=0, unsigned prio=5, std::chrono::milliseconds repeat_after=0s):m_active(true), m_id(id), m_priority(prio), m_repeat_after(repeat_after)
+    {
+        if (prio<1 || prio > NP)
+            throw std::invalid_argument ("wrong priority value");
+    }
     void Execute()const {std::cout << "task# " + std::to_string(m_id) + ":" + std::to_string(priority()) + "\n";}
     void Cancel() {m_active = false;} 
     bool active()const{return m_active;}
@@ -29,18 +35,16 @@ protected:
 
 template <typename T, std::size_t N>
 class TaskQueue
-{
-    std::array<std::deque<T>, N> os;
-    
+{ 
 public:
     void enqueue(T&& task)
     {
-        os[task.priority()].emplace_back(std::move(task));
+        os[task.priority()-1].emplace_back(std::move(task));
     }
  
     void bypass(T&& task)
     {
-        os[task.priority()].emplace_front(std::move(task));
+        os[task.priority()-1].emplace_front(std::move(task));
     }
     
     bool empty() const
@@ -60,8 +64,11 @@ public:
                 p.pop_front();
                 return p1;
             }
-        ///todo: throw an exception
+        throw std::logic_error("it seems method next() called with no preceding empty() check");
     }
+
+private:
+   std::array<std::deque<T>, N> os;   
 };
 
 class Scheduler
@@ -80,7 +87,7 @@ private:
     std::atomic<bool>        m_active;
 
     std::vector<std::thread> m_workers;
-    TaskQueue<Task, 10>      m_queue;
+    TaskQueue<Task, NP>      m_queue;
 };
 
 Scheduler::Scheduler(bool initial_state, unsigned pool_size) : m_lock(), m_cond(), m_active(initial_state)
@@ -150,7 +157,7 @@ int main()
     
     for (unsigned i = 0; i < 50; ++i)
     {
-        sched.Enqueue({i, i%10});
+        sched.Enqueue({i, i%10+1});
     }
 
     sched.Start();
@@ -161,6 +168,6 @@ int main()
     
     for (unsigned i = 0; i < 50; ++i)
     {
-        sched.Enqueue({100+i, i%10});
+        sched.Enqueue({100+i, i%10+1});
     }
 }
