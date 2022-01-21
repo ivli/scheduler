@@ -13,47 +13,77 @@ using namespace std::chrono_literals;
 class Task
 {
 public:
-    explicit Task(int id=0, unsigned prio=5, std::chrono::milliseconds repeat_after=0s) : m_cancelled(false), m_id(id), m_priority(prio), m_repeat_after(repeat_after){}
-    void Execute() const {if (!m_cancelled)
-                            std::cout << "task# " + std::to_string(m_id) + ":" + std::to_string(priority()) + "\n";}
-    void Cancel() {m_cancelled = true;} 
-    unsigned priority() const {return m_priority;}
-    std::chrono::milliseconds repeat_after() const {return m_repeat_after;}
-    bool periodic()const {return m_repeat_after == 0s;}
+    Task(unsigned id=0, unsigned prio=5, std::chrono::milliseconds repeat_after=0s):m_active(true), m_id(id), m_priority(prio), m_repeat_after(repeat_after){}
+    void Execute()const {std::cout << "task# " + std::to_string(m_id) + ":" + std::to_string(priority()) + "\n";}
+    void Cancel() {m_active = false;} 
+    bool active()const{return m_active;}
+    unsigned priority()const {return m_priority;}
+    std::chrono::milliseconds repeat_after()const {return m_repeat_after;}
+    bool periodic()const {return 0 != m_repeat_after.count();}
 protected:
-    bool m_cancelled;
-    int  m_id;
-    unsigned m_priority;
+    bool      m_active;
+    unsigned  m_id;
+    unsigned  m_priority;
     std::chrono::milliseconds m_repeat_after;
 };
 
-struct CompareTasks
+template <typename T, std::size_t N>
+class TaskQueue
 {
-    bool operator ()(const Task& lhs, const Task& rhs)const {return lhs.priority() > rhs.priority();}
+    std::array<std::deque<T>, N> os;
+    
+public:
+    void enqueue(T&& task)
+    {
+        os[task.priority()].emplace_back(std::move(task));
+    }
+ 
+    void bypass(T&& task)
+    {
+        os[task.priority()].emplace_front(std::move(task));
+    }
+    
+    bool empty() const
+    {
+        for (auto &p:os)
+            if(!p.empty())
+                return false;
+        return true;
+    }
+    
+    T next()
+    {
+        for (auto &p:os)
+            if (!p.empty())
+            {
+                auto p1=p.front();
+                p.pop_front();
+                return p1;
+            }
+        ///todo: throw an exception
+    }
 };
 
 class Scheduler
 {
 public:
-    explicit Scheduler(unsigned pool_size=0);
+    explicit Scheduler(bool initial_state=false, unsigned pool_size=0);
     ~Scheduler();
-    void Schedule(Task&& task);
-
+    void Enqueue(Task&& task);
+    void Start();
 protected:
     void service();
 
 private:
     std::mutex               m_lock;
     std::condition_variable  m_cond;
-    ///std::atomic<bool>        m_active;
+    std::atomic<bool>        m_active;
 
     std::vector<std::thread> m_workers;
-    std::array<std::queue<Task>, 10> m_oneshots;
-    //std::priority_queue<Task, std::vector<Task>, CompareTasks> m_oneshots;
-    //std::priority_queue<Task, std::vector<Task>, CompareTasks> m_periodics;
+    TaskQueue<Task, 10>      m_queue;
 };
 
-Scheduler::Scheduler(unsigned pool_size) : m_lock(), m_cond()
+Scheduler::Scheduler(bool initial_state, unsigned pool_size) : m_lock(), m_cond(), m_active(initial_state)
 {
     for (unsigned i = 0, k = pool_size ? pool_size : std::thread::hardware_concurrency(); i < k; ++i)
         m_workers.push_back(std::thread(&Scheduler::service, this));
@@ -67,14 +97,21 @@ Scheduler::~Scheduler()
         t.join();
 }
 
-void Scheduler::Schedule(Task&& task)
+void Scheduler::Enqueue(Task&& task)
 {
     std::unique_lock<std::mutex> lock(m_lock);
-    m_oneshots[task.priority()].emplace(std::move(task));
+    m_queue.enqueue(std::move(task));
     lock.unlock();
     m_cond.notify_one();
 }
 
+void Scheduler::Start()
+{
+    std::unique_lock<std::mutex> lock(m_lock);
+    m_active=true;
+    lock.unlock();
+    m_cond.notify_all();
+}
 
 void Scheduler::service()
 {
@@ -82,46 +119,48 @@ void Scheduler::service()
     
     for (;;)
     {
+        std::unique_lock<std::mutex> lock(m_lock);
+
+        m_cond.wait(lock, [this]() {return !m_queue.empty() && m_active;});
+
+        auto task = m_queue.next();
+        
+        lock.unlock(); //unlock the queue
+
+        if (task.active())
         {
-            std::unique_lock<std::mutex> lock(m_lock);
+            task.Execute();
 
-            m_cond.wait(lock, [this]() { return !m_oneshots.empty();});
-
-            if (m_oneshots.empty())
-                return;
-
-            for (auto &p:m_oneshots)
-                while(!p.empty())
+            if (task.periodic()) 
+            {
+                while (m_active && task.active())
                 {
-                    task=p.front();
-                    ///std::cout << p1.id << ":" << p1.prio << std::endl;
-                    p.pop();
+                    std::this_thread::sleep_for(task.repeat_after());
+                    task.Execute();
                 }
-
-
-            
-            //if (task.periodic())
-            //   m_periodics.push(task);
+            }
         }
-        ///lock.unlock();
-
-        task.Execute();
     }
 }
 
 
 int main()
 {
-   
-    Scheduler func_pool;
+    Scheduler sched;
     
-    for (int i = 0; i < 50; i++)
+    for (unsigned i = 0; i < 50; ++i)
     {
-        func_pool.Schedule(Task(i, i%10));
+        sched.Enqueue({i, i%10});
     }
 
+    sched.Start();
+    sched.Enqueue({777, 9, 1s});
+    sched.Enqueue({666,1,100ms});
 
-    std::this_thread::sleep_for(1s);
-    std::cout << "after sleep" << std::endl;
-
+    std::this_thread::sleep_for(2s);
+    
+    for (unsigned i = 0; i < 50; ++i)
+    {
+        sched.Enqueue({100+i, i%10});
+    }
 }
