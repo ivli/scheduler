@@ -16,7 +16,7 @@ public:
     Task(unsigned id=0, unsigned prio=5, std::chrono::milliseconds repeat_after=0s):m_active(true), m_id(id), m_priority(prio), m_repeat_after(repeat_after)
     {
         if (prio<1 || prio > NP)
-            throw std::invalid_argument ("wrong getPriority value");
+            throw std::invalid_argument ("wrong priority value");
     }
     void Execute()const {std::cout << "task# " + std::to_string(m_id) + ":" + std::to_string(getPriority()) + "\n";}
     void Cancel() {m_active = false;} 
