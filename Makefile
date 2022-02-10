@@ -1,10 +1,8 @@
-PHONY := all
 
 LDFLAGS := -lpthread
 CC := clang++
 
-test : main.cpp
+test : $(wildcard *.cpp) 
 	$(CC) $(LDFLAGS) -o $@  $?
 
-all:test
-
+all : test
